@@ -44,9 +44,9 @@ TPEX_QUOTES = "https://www.tpex.org.tw/openapi/v1/tpex_mainboard_daily_close_quo
 TWSE_DAYTRADE = "https://www.twse.com.tw/rwd/zh/dayTrading/TWTB4U?response=json"
 TWSE_COMPANY = "https://openapi.twse.com.tw/v1/opendata/t187ap03_L"
 TPEX_COMPANY = "https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap03_O"
-# 櫃買當沖標的：此端點未經驗證，取不到時預設排除上櫃股（見 --keep-unverified-otc）
-TPEX_DAYTRADE = ("https://www.tpex.org.tw/www/zh-tw/margin/dayTrade"
-                 "?response=json")
+# 櫃買「現股當沖交易標的」頁面對應的端點（由搜尋結果得知，回傳格式尚未實測）。
+# 取不到時預設排除上櫃股（見 --keep-unverified-otc），並印出回傳內容供除錯。
+TPEX_DAYTRADE = "https://www.tpex.org.tw/www/zh-tw/intraday/list"
 MOPS_BUSINESS = "https://mops.twse.com.tw/mops/web/ajax_t05st03"
 
 INDUSTRY = {
@@ -165,19 +165,42 @@ def load_daytrade():
                 ok[str(r[0]).strip()] = "buy_first_only" if r[2].strip() == "Y" else "both"
     except Exception as e:
         print(f"[警告] 無法取得證交所當沖標的：{e}", file=sys.stderr)
-    otc_ok = False
-    try:
-        j = get_json(TPEX_DAYTRADE)
-        tables = j.get("tables", [])
+    otc = load_tpex_daytrade()
+    for code, st in otc.items():
+        ok.setdefault(code, st)
+    return ok, date, bool(otc)
+
+
+def load_tpex_daytrade():
+    """櫃買當沖標的。回傳 {code: status}；失敗回傳 {} 並印出回傳內容前 300 字供除錯。"""
+    from datetime import datetime, timedelta, timezone
+    now = datetime.now(timezone(timedelta(hours=8)))
+    roc = f"{now.year - 1911}/{now.month:02d}/{now.day:02d}"
+    out, last_text = {}, ""
+    for date in (roc, ""):  # 先帶今天日期，不行再不帶日期
+        try:
+            r = requests.get(TPEX_DAYTRADE, headers=UA, timeout=20,
+                             params=dict(code="", date=date, response="json"))
+            last_text = r.text
+            j = r.json()
+        except Exception as e:
+            print(f"[警告] 櫃買當沖標的請求失敗(date={date!r})：{e}", file=sys.stderr)
+            continue
+        tables = j.get("tables") or [{"data": j.get("data", [])}]
         for t in tables:
-            for r in t.get("data", []):
-                code = str(r[0]).strip()
-                if re.fullmatch(r"\d{4}", code):
-                    ok.setdefault(code, "both")
-                    otc_ok = True
-    except Exception as e:
-        print(f"[警告] 無法取得櫃買當沖標的（上櫃股預設排除）：{e}", file=sys.stderr)
-    return ok, date, otc_ok
+            for row in t.get("data", []) or []:
+                if not row:
+                    continue
+                code = str(row[0]).strip()
+                if re.fullmatch(r"[1-9]\d{3}", code):
+                    # 若後面欄位出現 'Y'，視為暫停先賣後買（格式未實測，屬推測）
+                    flag = any(str(c).strip() == "Y" for c in row[2:])
+                    out[code] = "buy_first_only" if flag else "both"
+        if out:
+            return out
+    print("[警告] 無法取得櫃買當沖標的（上櫃股預設排除）。回傳內容前 300 字：\n"
+          + last_text[:300], file=sys.stderr)
+    return {}
 
 
 # ---------------------------------------------------------------- 產業 / 業務
