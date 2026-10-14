@@ -24,10 +24,12 @@
 
 主要產品/服務
   證交所開放資料沒有「主要經營業務」欄位。程式會先讀本機 business.csv
-  （欄位: code,business），讀不到再嘗試公開資訊觀測站，仍失敗則留白。
+  （欄位: code,business），讀不到再自動從 Yahoo 奇摩股市個股資料頁抓取
+  「主要經營業務」，仍失敗則留白。
 """
 import argparse
 import csv
+import html
 import json
 import os
 import re
@@ -271,6 +273,69 @@ def load_business_csv(path="business.csv"):
     return m
 
 
+BIZ_LOG = []  # 抓取失敗的原因，會顯示在網頁底部方便除錯
+BIZ_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+          "(KHTML, like Gecko) Chrome/124.0 Safari/537.36")
+# 『主要經營業務』之後若遇到這些欄位名稱，代表業務描述已結束
+BIZ_STOP = ("公司名稱", "產業類別", "董事長", "總經理", "發言人", "成立", "上市日期",
+            "上櫃日期", "股本", "資本額", "公司網址", "網址", "電話", "地址", "傳真",
+            "電子郵件", "股票過戶", "簽證會計師", "公司簡介", "員工人數", "更多")
+
+
+def html_to_lines(text):
+    t = re.sub(r"(?is)<(script|style)[^>]*>.*?</\1>", " ", text)
+    t = re.sub(r"(?i)<br\s*/?>|</(div|li|p|tr|td|th|dd|dt|span|h\d)>", "\n", t)
+    t = re.sub(r"<[^>]+>", " ", t)
+    t = html.unescape(t)
+    return [re.sub(r"\s+", " ", ln).strip() for ln in t.split("\n") if ln.strip()]
+
+
+def parse_business(text):
+    """從個股資料頁 HTML 取出『主要經營業務』。找不到回傳空字串。"""
+    label = "主要經營業務"
+    lines = html_to_lines(text)
+    for i, ln in enumerate(lines):
+        if not ln.startswith(label):
+            continue
+        out = []
+        rest = ln[len(label):].strip(" :：")
+        if rest:
+            out.append(rest)
+        for nxt in lines[i + 1:i + 7]:
+            if any(nxt.startswith(s) for s in BIZ_STOP):
+                break
+            out.append(nxt)
+            if len(out) >= 4:
+                break
+        if out:
+            return "、".join(out)[:120]
+    # 備援：頁面把資料放在 script 的 JSON 內
+    m = re.search(r'"主要經營業務"\s*:\s*"([^"]{2,200})"', text)
+    return m.group(1).replace("\\n", "、")[:120] if m else ""
+
+
+def fetch_business(code, market):
+    """從 Yahoo 奇摩股市個股資料頁抓『主要經營業務』。失敗回傳空字串並記錄原因。"""
+    import time
+    suffixes = [".TWO", ".TW"] if market == "上櫃" else [".TW", ".TWO"]
+    for suf in suffixes:
+        url = f"https://tw.stock.yahoo.com/quote/{code}{suf}/profile"
+        try:
+            r = requests.get(url, timeout=20, headers={
+                "User-Agent": BIZ_UA, "Accept-Language": "zh-TW,zh;q=0.9"})
+            if r.status_code != 200:
+                BIZ_LOG.append(f"{code}{suf}: HTTP {r.status_code}")
+            else:
+                b = parse_business(r.text)
+                if b:
+                    return b
+                BIZ_LOG.append(f"{code}{suf}: 頁面找不到『主要經營業務』")
+        except Exception as e:
+            BIZ_LOG.append(f"{code}{suf}: {type(e).__name__}")
+        time.sleep(0.5)
+    return ""
+
+
 def fetch_business_mops(code):
     """從公開資訊觀測站抓『主要經營業務』。頁面格式可能變動，失敗回傳空字串。"""
     try:
@@ -351,7 +416,7 @@ def main():
         r["industry"] = industry.get(r["code"], "未知")
         b = biz.get(r["code"], "")
         if not b and not a.demo and not a.no_mops:
-            b = fetch_business_mops(r["code"])
+            b = fetch_business(r["code"], r["market"])
         r["business"] = b or "（請補充：business.csv）"
 
     n_lu = sum(1 for r in picked if r["tag"] == "漲停")

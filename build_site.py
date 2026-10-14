@@ -31,12 +31,16 @@ def run(demo):
     picked = S.select(rows, daytrade, otc_ok)
     for r in picked:
         if not biz.get(r["code"]):
-            biz[r["code"]] = S.fetch_business_mops(r["code"])
+            biz[r["code"]] = S.fetch_business(r["code"], r["market"])
     n = lambda m: sum(1 for r in rows if r["market"] == m)
     d = lambda m: sum(1 for r in rows if r["market"] == m and r["code"] in daytrade)
     stats = (f"診斷：行情 上市 {n('上市')} 檔／上櫃 {n('上櫃')} 檔；"
              f"其中可當沖 上市 {d('上市')}／上櫃 {d('上櫃')}；"
              f"行情日期 {rows[0]['date']}")
+    got = sum(1 for r in picked if biz.get(r["code"]))
+    stats += f"；主要業務 {got}/{len(picked)}"
+    if S.BIZ_LOG:
+        stats += f"（失敗例：{S.BIZ_LOG[0]}）"
     print(stats)
     return picked, industry, biz, rows[0]["date"], dt_date, stats
 
