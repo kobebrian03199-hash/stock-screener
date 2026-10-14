@@ -20,7 +20,8 @@ OUT = "docs"
 def run(demo):
     if demo:
         rows, daytrade, otc_ok, industry, biz = S.demo_data()
-        return S.select(rows, daytrade, otc_ok), industry, biz, "DEMO", "DEMO"
+        return (S.select(rows, daytrade, otc_ok), industry, biz, "DEMO", "DEMO",
+                "模擬資料")
     rows = S.load_quotes()
     if not rows:
         sys.exit("取不到行情資料")
@@ -31,14 +32,20 @@ def run(demo):
     for r in picked:
         if not biz.get(r["code"]):
             biz[r["code"]] = S.fetch_business_mops(r["code"])
-    return picked, industry, biz, rows[0]["date"], dt_date
+    n = lambda m: sum(1 for r in rows if r["market"] == m)
+    d = lambda m: sum(1 for r in rows if r["market"] == m and r["code"] in daytrade)
+    stats = (f"診斷：行情 上市 {n('上市')} 檔／上櫃 {n('上櫃')} 檔；"
+             f"其中可當沖 上市 {d('上市')}／上櫃 {d('上櫃')}；"
+             f"行情日期 {rows[0]['date']}")
+    print(stats)
+    return picked, industry, biz, rows[0]["date"], dt_date, stats
 
 
 def esc(x):
     return html.escape(str(x))
 
 
-def build_html(picked, updated, qdate, ddate):
+def build_html(picked, updated, qdate, ddate, stats=""):
     n_lu = sum(1 for r in picked if r["tag"] == "漲停")
     cards = []
     for i, r in enumerate(picked, 1):
@@ -96,7 +103,7 @@ a{{color:var(--ac)}}
 <a href="result.csv">下載 CSV</a></div>
 <div class="grid">{''.join(cards)}</div>
 <footer>條件：漲停前20名（依成交量），不足以漲幅最高者補進；成交量 &gt; 1000 張；可當沖標的。
-當沖名單日期 {esc(ddate)}。資料來源：臺灣證券交易所、櫃買中心。僅供參考，不構成投資建議。</footer>
+當沖名單日期 {esc(ddate)}。資料來源：臺灣證券交易所、櫃買中心。僅供參考，不構成投資建議。<br>{esc(stats)}</footer>
 </main></body></html>"""
 
 
@@ -104,14 +111,14 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--demo", action="store_true")
     a = ap.parse_args()
-    picked, industry, biz, qdate, ddate = run(a.demo)
+    picked, industry, biz, qdate, ddate, stats = run(a.demo)
     for r in picked:
         r["industry"] = industry.get(r["code"], "未知")
         r["business"] = biz.get(r["code"], "")
     updated = datetime.now(TZ).strftime("%Y-%m-%d %H:%M")
     os.makedirs(OUT, exist_ok=True)
     with open(f"{OUT}/index.html", "w", encoding="utf-8") as f:
-        f.write(build_html(picked, updated, qdate, ddate))
+        f.write(build_html(picked, updated, qdate, ddate, stats))
     with open(f"{OUT}/result.csv", "w", encoding="utf-8-sig", newline="") as f:
         w = csv.writer(f)
         w.writerow(["排名", "代號", "名稱", "市場", "收盤價", "漲停價", "漲幅%", "成交量(張)",
