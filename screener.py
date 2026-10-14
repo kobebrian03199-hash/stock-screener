@@ -101,10 +101,48 @@ def limit_up_price(prev_close: Decimal) -> Decimal:
     return (raw / t).to_integral_value(rounding=ROUND_FLOOR) * t
 
 
-def get_json(url, **kw):
-    r = requests.get(url, headers=UA, timeout=20, **kw)
-    r.raise_for_status()
-    return r.json()
+def get_json(url, tries=4, **kw):
+    """帶重試的 GET。'Response ended prematurely' 這類連線中斷通常重試即可。"""
+    import time
+    headers = dict(UA, **{"Accept-Encoding": "identity", "Connection": "close"})
+    last = None
+    for i in range(tries):
+        try:
+            r = requests.get(url, headers=headers, timeout=30, **kw)
+            r.raise_for_status()
+            return r.json()
+        except Exception as e:
+            last = e
+            time.sleep(2 * (i + 1))
+    raise last
+
+
+def load_tpex_quotes_legacy():
+    """備用：櫃買舊版『上櫃股票收盤行情』端點（欄位順序依我的記憶，未實測）。
+    aaData 每列：代號、名稱、收盤、漲跌、開盤、最高、最低、均價、成交股數…"""
+    from datetime import datetime, timedelta, timezone
+    now = datetime.now(timezone(timedelta(hours=8)))
+    out = []
+    for back in range(0, 5):  # 今天沒資料就往前找最近交易日
+        d = now - timedelta(days=back)
+        roc = f"{d.year - 1911}/{d.month:02d}/{d.day:02d}"
+        url = ("https://www.tpex.org.tw/web/stock/aftertrading/daily_close_quotes/"
+               "stk_quote_result.php")
+        try:
+            j = get_json(url, params=dict(l="zh-tw", o="json", d=roc))
+        except Exception:
+            continue
+        rows = j.get("aaData") or j.get("tables", [{}])[0].get("data") or []
+        for r in rows:
+            try:
+                out.append({"SecuritiesCompanyCode": r[0], "CompanyName": r[1],
+                            "Close": r[2], "Change": r[3], "TradingShares": r[8],
+                            "Date": f"{d.year - 1911}{d.month:02d}{d.day:02d}"})
+            except Exception:
+                continue
+        if out:
+            return out
+    return out
 
 
 # ---------------------------------------------------------------- 行情
@@ -131,7 +169,13 @@ def load_quotes():
             data = get_json(url)
         except Exception as e:
             print(f"[警告] 無法取得{market}行情：{e}", file=sys.stderr)
-            continue
+            data = []
+            if market == "上櫃":
+                data = load_tpex_quotes_legacy()
+                print(f"[資訊] 改用櫃買備用端點，取得 {len(data)} 筆", file=sys.stderr)
+            if not data:
+                continue
+        print(f"[資訊] {market}行情 {len(data)} 筆", file=sys.stderr)
         for d in data:
             code = str(pick(d, *f["code"]) or "").strip()
             if not re.fullmatch(r"[1-9]\d{3}", code):  # 只取 4 碼一般股票
