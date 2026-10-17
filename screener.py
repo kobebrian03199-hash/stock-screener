@@ -119,27 +119,34 @@ def get_json(url, tries=4, **kw):
     raise last
 
 
-def load_tpex_quotes_legacy():
+def load_tpex_quotes_legacy(target=None):
     """備用：櫃買舊版『上櫃股票收盤行情』端點（欄位順序依我的記憶，未實測）。
-    aaData 每列：代號、名稱、收盤、漲跌、開盤、最高、最低、均價、成交股數…"""
+    aaData 每列：代號、名稱、收盤、漲跌、開盤、最高、最低、均價、成交股數…
+    target 為民國日期字串如 '1151016'：只取該日；不給則從今天往前找最近交易日。"""
     from datetime import datetime, timedelta, timezone
-    now = datetime.now(timezone(timedelta(hours=8)))
+    if target and len(target) == 7 and target.isdigit():
+        days = [(int(target[:3]) + 1911, int(target[3:5]), int(target[5:7]))]
+    else:
+        now = datetime.now(timezone(timedelta(hours=8)))
+        days = []
+        for b in range(5):
+            d = now - timedelta(days=b)
+            days.append((d.year, d.month, d.day))
     out = []
-    for back in range(0, 5):  # 今天沒資料就往前找最近交易日
-        d = now - timedelta(days=back)
-        roc = f"{d.year - 1911}/{d.month:02d}/{d.day:02d}"
+    for y, mo, dd in days:
+        roc = f"{y - 1911}/{mo:02d}/{dd:02d}"
         url = ("https://www.tpex.org.tw/web/stock/aftertrading/daily_close_quotes/"
                "stk_quote_result.php")
         try:
             j = get_json(url, params=dict(l="zh-tw", o="json", d=roc))
         except Exception:
             continue
-        rows = j.get("aaData") or j.get("tables", [{}])[0].get("data") or []
+        rows = j.get("aaData") or (j.get("tables") or [{}])[0].get("data") or []
         for r in rows:
             try:
                 out.append({"SecuritiesCompanyCode": r[0], "CompanyName": r[1],
                             "Close": r[2], "Change": r[3], "TradingShares": r[8],
-                            "Date": f"{d.year - 1911}{d.month:02d}{d.day:02d}"})
+                            "Date": f"{y - 1911}{mo:02d}{dd:02d}"})
             except Exception:
                 continue
         if out:
@@ -155,18 +162,50 @@ def pick(d, *names):
     return None
 
 
+FIELDS = {
+    "上市": dict(code=("Code",), name=("Name",), vol=("TradeVolume",),
+                 close=("ClosingPrice",), chg=("Change",), date=("Date",)),
+    "上櫃": dict(code=("SecuritiesCompanyCode", "Code"), name=("CompanyName", "Name"),
+                 vol=("TradingShares", "TradeVolume"), close=("Close", "ClosingPrice"),
+                 chg=("Change",), date=("Date",)),
+}
+QUOTE_NOTES = []  # 上市/上櫃資料日期不一致等提醒，會顯示在網頁底部
+
+
+def norm_date(s):
+    """統一成民國 7 碼，例如 1151016；西元 8 碼會轉換；無法判斷回傳空字串。"""
+    d = re.sub(r"\D", "", str(s or ""))
+    if len(d) == 8 and d.startswith("20"):
+        d = f"{int(d[:4]) - 1911}{d[4:]}"
+    return d if len(d) == 7 else ""
+
+
+def rows_from(data, market):
+    f = FIELDS[market]
+    rows = []
+    for d in data:
+        code = str(pick(d, *f["code"]) or "").strip()
+        if not re.fullmatch(r"[1-9]\d{3}", code):  # 只取 4 碼一般股票
+            continue
+        close, chg = num(pick(d, *f["close"])), num(pick(d, *f["chg"]))
+        vol = num(pick(d, *f["vol"]))
+        if close is None or chg is None or vol is None or close <= 0:
+            continue
+        prev = close - chg
+        if prev <= 0:
+            continue
+        rows.append(dict(
+            code=code, name=str(pick(d, *f["name"]) or "").strip(),
+            market=market, close=close, prev=prev,
+            pct=(chg / prev * 100), lots=int(vol / 1000),
+            date=norm_date(pick(d, *f["date"])),
+        ))
+    return rows
+
+
 def load_quotes():
     rows = []
-    for market, url, f in (
-        ("上市", TWSE_QUOTES, dict(code=("Code",), name=("Name",),
-                                   vol=("TradeVolume",), close=("ClosingPrice",),
-                                   chg=("Change",), date=("Date",))),
-        ("上櫃", TPEX_QUOTES, dict(code=("SecuritiesCompanyCode", "Code"),
-                                   name=("CompanyName", "Name"),
-                                   vol=("TradingShares", "TradeVolume"),
-                                   close=("Close", "ClosingPrice"),
-                                   chg=("Change",), date=("Date",))),
-    ):
+    for market, url in (("上市", TWSE_QUOTES), ("上櫃", TPEX_QUOTES)):
         try:
             data = get_json(url)
         except Exception as e:
@@ -175,26 +214,25 @@ def load_quotes():
             if market == "上櫃":
                 data = load_tpex_quotes_legacy()
                 print(f"[資訊] 改用櫃買備用端點，取得 {len(data)} 筆", file=sys.stderr)
-            if not data:
-                continue
-        print(f"[資訊] {market}行情 {len(data)} 筆", file=sys.stderr)
-        for d in data:
-            code = str(pick(d, *f["code"]) or "").strip()
-            if not re.fullmatch(r"[1-9]\d{3}", code):  # 只取 4 碼一般股票
-                continue
-            close, chg = num(pick(d, *f["close"])), num(pick(d, *f["chg"]))
-            vol = num(pick(d, *f["vol"]))
-            if close is None or chg is None or vol is None or close <= 0:
-                continue
-            prev = close - chg
-            if prev <= 0:
-                continue
-            rows.append(dict(
-                code=code, name=str(pick(d, *f["name"]) or "").strip(),
-                market=market, close=close, prev=prev,
-                pct=(chg / prev * 100), lots=int(vol / 1000),
-                date=str(pick(d, *f["date"]) or ""),
-            ))
+        got = rows_from(data, market) if data else []
+        print(f"[資訊] {market}行情 {len(got)} 檔", file=sys.stderr)
+        rows += got
+
+    # 上市與上櫃必須是同一個交易日，否則排名會混到不同天的資料
+    tw = sorted({r["date"] for r in rows if r["market"] == "上市" and r["date"]})
+    target = tw[-1] if tw else ""
+    otc = [r for r in rows if r["market"] == "上櫃"]
+    otc_dates = sorted({r["date"] for r in otc if r["date"]})
+    if target and otc_dates and otc_dates != [target]:
+        QUOTE_NOTES.append(f"上櫃行情日期 {'/'.join(otc_dates)} 與上市 {target} 不一致")
+        fresh = rows_from(load_tpex_quotes_legacy(target), "上櫃")
+        rows = [r for r in rows if r["market"] != "上櫃"]
+        if fresh:
+            rows += fresh
+            QUOTE_NOTES.append(f"已改用櫃買備用端點取得 {target} 上櫃行情 {len(fresh)} 檔")
+        else:
+            QUOTE_NOTES.append("備用端點也取不到同日上櫃行情，本次已排除上櫃股")
+        print("[警告] " + "；".join(QUOTE_NOTES), file=sys.stderr)
     return rows
 
 

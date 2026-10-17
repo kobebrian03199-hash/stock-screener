@@ -34,9 +34,12 @@ def run(demo):
             biz[r["code"]] = S.fetch_business(r["code"], r["market"])
     n = lambda m: sum(1 for r in rows if r["market"] == m)
     d = lambda m: sum(1 for r in rows if r["market"] == m and r["code"] in daytrade)
+    dt = lambda m: "/".join(sorted({r["date"] for r in rows if r["market"] == m})) or "無"
     stats = (f"診斷：行情 上市 {n('上市')} 檔／上櫃 {n('上櫃')} 檔；"
              f"其中可當沖 上市 {d('上市')}／上櫃 {d('上櫃')}；"
-             f"行情日期 {rows[0]['date']}")
+             f"行情日期 上市 {dt('上市')}／上櫃 {dt('上櫃')}")
+    if S.QUOTE_NOTES:
+        stats += "；注意：" + "；".join(S.QUOTE_NOTES)
     got = sum(1 for r in picked if biz.get(r["code"]))
     stats += f"；主要業務 {got}/{len(picked)}"
     if S.BIZ_LOG:
