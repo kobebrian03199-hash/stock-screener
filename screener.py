@@ -279,7 +279,8 @@ BIZ_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
 # 『主要經營業務』之後若遇到這些欄位名稱，代表業務描述已結束
 BIZ_STOP = ("公司名稱", "產業類別", "董事長", "總經理", "發言人", "成立", "上市日期",
             "上櫃日期", "股本", "資本額", "公司網址", "網址", "電話", "地址", "傳真",
-            "電子郵件", "股票過戶", "簽證會計師", "公司簡介", "員工人數", "更多")
+            "電子郵件", "股票過戶", "簽證會計師", "公司簡介", "員工人數", "更多",
+            "配股資訊", "配息資訊", "股利所屬期間")
 
 
 def html_to_lines(text):
@@ -288,6 +289,18 @@ def html_to_lines(text):
     t = re.sub(r"<[^>]+>", " ", t)
     t = html.unescape(t)
     return [re.sub(r"\s+", " ", ln).strip() for ln in t.split("\n") if ln.strip()]
+
+
+def clean_business(parts):
+    """去除重複句與句尾標點，用『；』串接，過長則截斷。"""
+    seen, out = set(), []
+    for p in parts:
+        p = re.sub(r"\s+", " ", p).strip(" 、。;；")
+        if p and p not in seen:
+            seen.add(p)
+            out.append(p)
+    s = "；".join(out)
+    return s if len(s) <= 90 else s[:90] + "…"
 
 
 def parse_business(text):
@@ -308,7 +321,7 @@ def parse_business(text):
             if len(out) >= 4:
                 break
         if out:
-            return "、".join(out)[:120]
+            return clean_business(out)
     # 備援：頁面把資料放在 script 的 JSON 內
     m = re.search(r'"主要經營業務"\s*:\s*"([^"]{2,200})"', text)
     return m.group(1).replace("\\n", "、")[:120] if m else ""
